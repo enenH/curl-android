@@ -25,8 +25,8 @@ endfunction()
 set(LIBS curl nghttp2 nghttp3 ngtcp2 ngtcp2_crypto crypto ssl)
 
 foreach (lib ${LIBS})
-    add_imported_library(${lib} ${CMAKE_SOURCE_DIR}/modules/${lib}_static/libs/android.${CMAKE_ANDROID_ARCH_ABI}/lib${lib}_static.a)
-    target_include_directories(curl_android INTERFACE ${CMAKE_SOURCE_DIR}/modules/${lib}_static/include)
+    add_imported_library(${lib} ${CMAKE_CURRENT_SOURCE_DIR}/modules/${lib}_static/libs/android.${CMAKE_ANDROID_ARCH_ABI}/lib${lib}_static.a)
+    target_include_directories(curl_android INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/modules/${lib}_static/include)
 endforeach ()
 
 target_link_libraries(curl_android INTERFACE

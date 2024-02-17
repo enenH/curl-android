@@ -29,6 +29,7 @@ foreach (lib ${LIBS})
     target_include_directories(curl_android INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/modules/${lib}_static/include)
 endforeach ()
 
+
 target_link_libraries(curl_android INTERFACE
         curl
         nghttp2

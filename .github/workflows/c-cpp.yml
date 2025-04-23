@@ -103,11 +103,8 @@ jobs:
           set(LIBS curl nghttp2 nghttp3 ngtcp2 ngtcp2_crypto crypto ssl)
           
           foreach (lib ${LIBS})
-              file(GLOB LIB_PATH "merged/modules/${lib}_static/libs/android.*/*.a")
-              if(LIB_PATH)
-                  add_imported_library(${lib} ${LIB_PATH})
-                  target_include_directories(curl_android INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/modules/${lib}_static/include)
-              endif()
+                  add_imported_library(${lib} ${CMAKE_CURRENT_SOURCE_DIR}/prefab/modules/${lib}_static/libs/android.${CMAKE_ANDROID_ARCH_ABI}/lib${lib}_static.a)
+                  target_include_directories(curl_android INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/prefab/modules/${lib}_static/include)
           endforeach()
           
           target_link_libraries(curl_android INTERFACE
@@ -121,9 +118,21 @@ jobs:
                   z)
           EOF
 
-      # -------- Step 5: Upload final artifact --------
-      - name: Upload merged output
-        uses: actions/upload-artifact@v4
+      # -------- Step 5: Create archive for release --------
+      - name: Create release archive
+        run: |
+          RELEASE_VERSION="${{ steps.find_curl_aar.outputs.version }}"
+          cd merged
+          zip -r "../curl-boringssl-android-${RELEASE_VERSION}.zip" .
+
+      # -------- Step 6: Create GitHub release --------
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
         with:
-          name: combined-curl-boringssl
-          path: merged
+          tag_name: v${{ steps.find_curl_aar.outputs.version }}
+          name: Curl+BoringSSL Android v${{ steps.find_curl_aar.outputs.version }}
+          files: curl-boringssl-android-${{ steps.find_curl_aar.outputs.version }}.zip
+          draft: false
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}

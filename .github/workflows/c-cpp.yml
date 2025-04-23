@@ -42,10 +42,10 @@ jobs:
           fi
           echo "最新成功运行 ID: $LATEST_RUN_ID"
           mkdir -p curl_download
-          echo "从运行 $LATEST_RUN_ID 下载 library.zip..."
-          gh run download --repo vvb2060/curl-android "$LATEST_RUN_ID" --name library.zip --dir curl_download
-          if [ ! -f curl_download/library.zip ]; then
-            echo "::error::下载 curl-android 的 library.zip 失败！"
+          echo "从运行 $LATEST_RUN_ID 下载 library..."
+          gh run download --repo vvb2060/curl-android "$LATEST_RUN_ID" --name library --dir curl_download
+          if [ ! -f curl_download/library ]; then
+            echo "::error::下载 curl-android 的 library 失败！"
             exit 1
           fi
           echo "curl-android 下载完成。"
@@ -64,10 +64,10 @@ jobs:
           fi
           echo "最新成功运行 ID: $LATEST_RUN_ID"
           mkdir -p boringssl_download
-          echo "从运行 $LATEST_RUN_ID 下载 library.zip..."
-          gh run download --repo vvb2060/BoringSSL_Android "$LATEST_RUN_ID" --name library.zip --dir boringssl_download
-           if [ ! -f boringssl_download/library.zip ]; then
-            echo "::error::下载 BoringSSL_Android 的 library.zip 失败！"
+          echo "从运行 $LATEST_RUN_ID 下载 library..."
+          gh run download --repo vvb2060/BoringSSL_Android "$LATEST_RUN_ID" --name library --dir boringssl_download
+           if [ ! -f boringssl_download/library ]; then
+            echo "::error::下载 BoringSSL_Android 的 library 失败！"
             exit 1
           fi
           echo "BoringSSL_Android 下载完成。"
@@ -78,16 +78,16 @@ jobs:
       - name: Process curl-android artifact and Extract Version
         id: curl_process # 给步骤设置 ID 以便后续引用其输出
         run: |
-          echo "解压 curl-android library.zip 到 output 目录..."
+          echo "解压 curl-android library 到 output 目录..."
           # 直接解压到最终目录，假设 zip 内已经是需要的目录结构
-          unzip -q curl_download/library.zip -d output
+          unzip -q curl_download/library -d output
           echo "检查解压后的 curl 结构 (部分):"
           ls -R output/modules | head -n 20
 
           echo "在 curl-android artifact 中查找 AAR 文件以提取版本号..."
           # 为了查找 AAR 文件名，解压到临时目录，避免污染 output
           mkdir curl_temp_extract
-          unzip -q curl_download/library.zip -d curl_temp_extract
+          unzip -q curl_download/library -d curl_temp_extract
           # 查找第一个包含 'lto' 的 .aar 文件
           CURL_AAR_FILE=$(find curl_temp_extract -type f -name '*lto*.aar' | head -n 1)
           rm -rf curl_temp_extract # 清理临时目录
@@ -109,9 +109,9 @@ jobs:
 
       - name: Process BoringSSL_Android artifact
         run: |
-          echo "解压 BoringSSL_Android library.zip 到 output 目录..."
+          echo "解压 BoringSSL_Android library 到 output 目录..."
           # 将 BoringSSL 解压到 *相同* 的 output 目录，它应该合并库（如 crypto, ssl）
-          unzip -q boringssl_download/library.zip -d output
+          unzip -q boringssl_download/library -d output
           echo "检查合并后的结构 (部分):"
           ls -R output/modules | head -n 20
           # 检查关键库是否存在
@@ -122,7 +122,7 @@ jobs:
           echo "在 BoringSSL_Android artifact 中查找 AAR 文件 (按要求)..."
           # 同样，为了查找 AAR 文件名，解压到临时目录
           mkdir boringssl_temp_extract
-          unzip -q boringssl_download/library.zip -d boringssl_temp_extract
+          unzip -q boringssl_download/library -d boringssl_temp_extract
           BORINGSSL_AAR_FILE=$(find boringssl_temp_extract -type f -name '*lto*.aar' | head -n 1)
           rm -rf boringssl_temp_extract # 清理临时目录
 

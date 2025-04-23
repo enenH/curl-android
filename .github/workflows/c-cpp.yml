@@ -1,54 +1,129 @@
-name: Download and process curl-android artifact
+name: Download and combine AARs
 
 on:
   workflow_dispatch:
 
 jobs:
-  extract-aar:
+  combine:
     runs-on: ubuntu-latest
     steps:
-      - name: Get latest successful run ID
-        id: get_run
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y unzip jq
+
+      # -------- Step 1: Download curl-android artifact --------
+      - name: Get latest curl-android run ID
+        id: get_curl_run
         run: |
-          RUN_ID=$(curl -s \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+          RUN_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             https://api.github.com/repos/vvb2060/curl-android/actions/runs \
-            | jq '.workflow_runs[] | select(.conclusion=="success") | .id' \
-            | head -n 1)
+            | jq '.workflow_runs[] | select(.conclusion=="success") | .id' | head -n 1)
           echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
 
-      - name: Get artifact ID for library.zip
-        id: get_artifact
+      - name: Get curl-android artifact ID
+        id: get_curl_artifact
         run: |
-          ARTIFACT_ID=$(curl -s \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            https://api.github.com/repos/vvb2060/curl-android/actions/runs/${{ steps.get_run.outputs.run_id }}/artifacts \
+          ARTIFACT_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/vvb2060/curl-android/actions/runs/${{ steps.get_curl_run.outputs.run_id }}/artifacts \
             | jq '.artifacts[] | select(.name=="library") | .id')
           echo "artifact_id=$ARTIFACT_ID" >> $GITHUB_OUTPUT
 
-      - name: Download library.zip
+      - name: Download curl-android artifact
         run: |
-          curl -L \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -o library.zip \
-            https://api.github.com/repos/vvb2060/curl-android/actions/artifacts/${{ steps.get_artifact.outputs.artifact_id }}/zip
+          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -o curl.zip \
+            https://api.github.com/repos/vvb2060/curl-android/actions/artifacts/${{ steps.get_curl_artifact.outputs.artifact_id }}/zip
 
-      - name: Unzip library.zip
-        run: unzip library.zip -d extracted
+      - name: Unzip curl.zip
+        run: unzip curl.zip -d curl
 
-      - name: Find first .aar file containing 'lto'
-        id: find_aar
+      - name: Find curl .aar and extract version
+        id: find_curl_aar
         run: |
-          AAR_FILE=$(find extracted -type f -name "*lto*.aar" | head -n 1)
-          echo "aar_file=$AAR_FILE" >> $GITHUB_OUTPUT
-          echo "Found AAR file: $AAR_FILE"
+          AAR_PATH=$(find curl -type f -name "*lto*.aar" | head -n 1)
+          echo "aar_path=$AAR_PATH" >> $GITHUB_OUTPUT
+          BASENAME=$(basename "$AAR_PATH")
+          VERSION=$(echo $BASENAME | sed -n 's/curl-\(.*\)-lto.aar/\1/p')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Unzip .aar file
+      # -------- Step 2: Download BoringSSL_Android artifact --------
+      - name: Get latest BoringSSL run ID
+        id: get_ssl_run
         run: |
-          mkdir aar_contents
-          unzip "${{ steps.find_aar.outputs.aar_file }}" -d aar_contents
+          RUN_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/vvb2060/BoringSSL_Android/actions/runs \
+            | jq '.workflow_runs[] | select(.conclusion=="success") | .id' | head -n 1)
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
 
-      - name: List files inside .aar
+      - name: Get BoringSSL artifact ID
+        id: get_ssl_artifact
         run: |
-          echo "Files inside the .aar file:"
-          find aar_contents -type f
+          ARTIFACT_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/vvb2060/BoringSSL_Android/actions/runs/${{ steps.get_ssl_run.outputs.run_id }}/artifacts \
+            | jq '.artifacts[] | select(.name=="library") | .id')
+          echo "artifact_id=$ARTIFACT_ID" >> $GITHUB_OUTPUT
+
+      - name: Download BoringSSL artifact
+        run: |
+          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -o boring.zip \
+            https://api.github.com/repos/vvb2060/BoringSSL_Android/actions/artifacts/${{ steps.get_ssl_artifact.outputs.artifact_id }}/zip
+
+      - name: Unzip boring.zip
+        run: unzip boring.zip -d boring
+
+      - name: Find BoringSSL .aar
+        id: find_ssl_aar
+        run: |
+          AAR_PATH=$(find boring -type f -name "*lto*.aar" | head -n 1)
+          echo "aar_path=$AAR_PATH" >> $GITHUB_OUTPUT
+
+      # -------- Step 3: Extract both AARs --------
+      - name: Extract all .aar files
+        run: |
+          mkdir merged
+          unzip "${{ steps.find_curl_aar.outputs.aar_path }}" -d merged
+          unzip "${{ steps.find_ssl_aar.outputs.aar_path }}" -d merged
+
+      # -------- Step 4: Generate CMakeLists.txt --------
+      - name: Generate CMakeLists.txt
+        run: |
+          cat > merged/CMakeLists.txt <<EOF
+cmake_minimum_required(VERSION 3.27)
+
+project(curl_android)
+
+add_library(curl_android INTERFACE)
+add_library(curl::curl_static ALIAS curl_android)
+
+function(add_imported_library lib_name lib_path)
+    add_library(\${lib_name} STATIC IMPORTED)
+    set_target_properties(\${lib_name} PROPERTIES IMPORTED_LOCATION \${lib_path})
+endfunction()
+
+set(LIBS curl nghttp2 nghttp3 ngtcp2 ngtcp2_crypto crypto ssl)
+
+foreach (lib \${LIBS})
+    file(GLOB LIB_PATH "merged/modules/\${lib}_static/libs/android.*/*.a")
+    if(LIB_PATH)
+        add_imported_library(\${lib} \${LIB_PATH})
+        target_include_directories(curl_android INTERFACE \${CMAKE_CURRENT_SOURCE_DIR}/modules/\${lib}_static/include)
+    endif()
+endforeach ()
+
+target_link_libraries(curl_android INTERFACE
+        curl
+        nghttp2
+        nghttp3
+        ngtcp2
+        ngtcp2_crypto
+        crypto
+        ssl
+        z)
+EOF
+
+      # -------- Step 5: Upload final artifact --------
+      - name: Upload merged output
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-curl-boringssl
+          path: merged

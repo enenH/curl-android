@@ -1,120 +1,222 @@
-name: Combine AARs and Generate CMake
+name: Build Combined Curl and BoringSSL Libraries
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 允许手动触发
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read # 需要读取仓库信息 (gh repo view)
+      actions: read  # 需要下载其他仓库的 artifacts (gh run download)
+
     steps:
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y unzip jq
+      - name: Checkout repository # 检出当前仓库（如果需要在此仓库中操作）
+        uses: actions/checkout@v4
 
-      - name: Get latest curl-android run ID
-        id: curl_run
+      # GitHub CLI 通常预装在 ubuntu-latest runner 上，但为保险起见可以取消下面的注释
+      # - name: Install GitHub CLI
+      #   run: |
+      #     type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
+      #     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+      #     && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+      #     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+      #     && sudo apt update \
+      #     && sudo apt install gh -y
+      #   env:
+      #      DEBIAN_FRONTEND: noninteractive
+
+      - name: Download latest curl-android artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用 Runner 提供的 GITHUB_TOKEN
         run: |
-          echo "run_id=$(curl -s -H \"Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}\" \
-            https://api.github.com/repos/vvb2060/curl-android/actions/runs \
-            | jq '.workflow_runs[] | select(.conclusion==\"success\") | .id' | head -n 1)" >> $GITHUB_OUTPUT
+          echo "寻找 vvb2060/curl-android 的最新成功运行..."
+          # 获取默认分支名
+          DEFAULT_BRANCH=$(gh repo view vvb2060/curl-android --json defaultBranchRef --jq .defaultBranchRef.name)
+          echo "默认分支: $DEFAULT_BRANCH"
+          # 查找该分支上最新的成功运行 ID (假设 artifact 在默认分支的构建流程中生成)
+          LATEST_RUN_ID=$(gh run list --repo vvb2060/curl-android --branch "$DEFAULT_BRANCH" --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          if [ -z "$LATEST_RUN_ID" ] || [ "$LATEST_RUN_ID" == "null" ]; then
+            echo "::error::找不到 vvb2060/curl-android 在分支 '$DEFAULT_BRANCH' 上的成功运行！"
+            exit 1
+          fi
+          echo "最新成功运行 ID: $LATEST_RUN_ID"
+          mkdir -p curl_download
+          echo "从运行 $LATEST_RUN_ID 下载 library.zip..."
+          gh run download --repo vvb2060/curl-android "$LATEST_RUN_ID" --name library.zip --dir curl_download
+          if [ ! -f curl_download/library.zip ]; then
+            echo "::error::下载 curl-android 的 library.zip 失败！"
+            exit 1
+          fi
+          echo "curl-android 下载完成。"
 
-      - name: Get curl-android artifact ID
-        id: curl_artifact
+      - name: Download latest BoringSSL_Android artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "artifact_id=$(curl -s -H \"Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}\" \
-            https://api.github.com/repos/vvb2060/curl-android/actions/runs/${{ steps.curl_run.outputs.run_id }}/artifacts \
-            | jq '.artifacts[] | select(.name==\"library\") | .id')" >> $GITHUB_OUTPUT
+          echo "寻找 vvb2060/BoringSSL_Android 的最新成功运行..."
+          DEFAULT_BRANCH=$(gh repo view vvb2060/BoringSSL_Android --json defaultBranchRef --jq .defaultBranchRef.name)
+          echo "默认分支: $DEFAULT_BRANCH"
+          LATEST_RUN_ID=$(gh run list --repo vvb2060/BoringSSL_Android --branch "$DEFAULT_BRANCH" --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+           if [ -z "$LATEST_RUN_ID" ] || [ "$LATEST_RUN_ID" == "null" ]; then
+            echo "::error::找不到 vvb2060/BoringSSL_Android 在分支 '$DEFAULT_BRANCH' 上的成功运行！"
+            exit 1
+          fi
+          echo "最新成功运行 ID: $LATEST_RUN_ID"
+          mkdir -p boringssl_download
+          echo "从运行 $LATEST_RUN_ID 下载 library.zip..."
+          gh run download --repo vvb2060/BoringSSL_Android "$LATEST_RUN_ID" --name library.zip --dir boringssl_download
+           if [ ! -f boringssl_download/library.zip ]; then
+            echo "::error::下载 BoringSSL_Android 的 library.zip 失败！"
+            exit 1
+          fi
+          echo "BoringSSL_Android 下载完成。"
 
-      - name: Download curl-android artifact
+      - name: Prepare output directory
+        run: mkdir -p output/modules # 创建最终输出目录，CMakeLists.txt 将基于此目录
+
+      - name: Process curl-android artifact and Extract Version
+        id: curl_process # 给步骤设置 ID 以便后续引用其输出
         run: |
-          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -o curl.zip \
-            https://api.github.com/repos/vvb2060/curl-android/actions/artifacts/${{ steps.curl_artifact.outputs.artifact_id }}/zip
+          echo "解压 curl-android library.zip 到 output 目录..."
+          # 直接解压到最终目录，假设 zip 内已经是需要的目录结构
+          unzip -q curl_download/library.zip -d output
+          echo "检查解压后的 curl 结构 (部分):"
+          ls -R output/modules | head -n 20
 
-      - name: Unzip curl.zip
-        run: unzip curl.zip -d curl
+          echo "在 curl-android artifact 中查找 AAR 文件以提取版本号..."
+          # 为了查找 AAR 文件名，解压到临时目录，避免污染 output
+          mkdir curl_temp_extract
+          unzip -q curl_download/library.zip -d curl_temp_extract
+          # 查找第一个包含 'lto' 的 .aar 文件
+          CURL_AAR_FILE=$(find curl_temp_extract -type f -name '*lto*.aar' | head -n 1)
+          rm -rf curl_temp_extract # 清理临时目录
 
-      - name: Find curl .aar and extract version
-        id: curl_aar
+          if [ -z "$CURL_AAR_FILE" ]; then
+            echo "::warning::在 curl-android artifact 中未找到包含 'lto' 的 AAR 文件来确定版本号。将使用 'unknown'。"
+            CURL_VERSION="unknown"
+          else
+            echo "找到用于版本参考的 AAR: $CURL_AAR_FILE"
+            CURL_AAR_BASENAME=$(basename "$CURL_AAR_FILE")
+            # 提取版本号：移除 'curl-' 前缀
+            TEMP_VERSION=${CURL_AAR_BASENAME#curl-}
+            # 提取版本号：移除 '-lto' 及之后的所有内容
+            CURL_VERSION=${TEMP_VERSION%-lto*}
+            echo "提取到的 curl 版本号: $CURL_VERSION"
+          fi
+          # 设置步骤输出，以便后续步骤（如 CMakeLists 生成和 Artifact 上传）使用
+          echo "version=$CURL_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Process BoringSSL_Android artifact
         run: |
-          AAR=$(find curl -type f -name "*lto*.aar" | head -n 1)
-          BASENAME=$(basename "$AAR")
-          VERSION=$(echo $BASENAME | sed -n 's/curl-\(.*\)-lto.aar/\1/p')
-          echo "aar_path=$AAR" >> $GITHUB_OUTPUT
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "解压 BoringSSL_Android library.zip 到 output 目录..."
+          # 将 BoringSSL 解压到 *相同* 的 output 目录，它应该合并库（如 crypto, ssl）
+          unzip -q boringssl_download/library.zip -d output
+          echo "检查合并后的结构 (部分):"
+          ls -R output/modules | head -n 20
+          # 检查关键库是否存在
+          echo "检查 crypto/ssl 库:"
+          find output/modules -name 'libcrypto_static.a' > /dev/null || echo "::warning::未找到 libcrypto_static.a!"
+          find output/modules -name 'libssl_static.a' > /dev/null || echo "::warning::未找到 libssl_static.a!"
 
-      - name: Get latest boringssl run ID
-        id: ssl_run
-        run: |
-          echo "run_id=$(curl -s -H \"Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}\" \
-            https://api.github.com/repos/vvb2060/BoringSSL_Android/actions/runs \
-            | jq '.workflow_runs[] | select(.conclusion==\"success\") | .id' | head -n 1)" >> $GITHUB_OUTPUT
+          echo "在 BoringSSL_Android artifact 中查找 AAR 文件 (按要求)..."
+          # 同样，为了查找 AAR 文件名，解压到临时目录
+          mkdir boringssl_temp_extract
+          unzip -q boringssl_download/library.zip -d boringssl_temp_extract
+          BORINGSSL_AAR_FILE=$(find boringssl_temp_extract -type f -name '*lto*.aar' | head -n 1)
+          rm -rf boringssl_temp_extract # 清理临时目录
 
-      - name: Get boringssl artifact ID
-        id: ssl_artifact
-        run: |
-          echo "artifact_id=$(curl -s -H \"Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}\" \
-            https://api.github.com/repos/vvb2060/BoringSSL_Android/actions/runs/${{ steps.ssl_run.outputs.run_id }}/artifacts \
-            | jq '.artifacts[] | select(.name==\"library\") | .id')" >> $GITHUB_OUTPUT
-
-      - name: Download boringssl artifact
-        run: |
-          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -o ssl.zip \
-            https://api.github.com/repos/vvb2060/BoringSSL_Android/actions/artifacts/${{ steps.ssl_artifact.outputs.artifact_id }}/zip
-
-      - name: Unzip ssl.zip
-        run: unzip ssl.zip -d ssl
-
-      - name: Find boringssl .aar
-        id: ssl_aar
-        run: |
-          AAR=$(find ssl -type f -name "*lto*.aar" | head -n 1)
-          echo "aar_path=$AAR" >> $GITHUB_OUTPUT
-
-      - name: Extract AARs
-        run: |
-          mkdir merged
-          unzip "${{ steps.curl_aar.outputs.aar_path }}" -d merged
-          unzip "${{ steps.ssl_aar.outputs.aar_path }}" -d merged
+          if [ -z "$BORINGSSL_AAR_FILE" ]; then
+            echo "::warning::在 BoringSSL artifact 中未找到包含 'lto' 的 AAR 文件。"
+          else
+            echo "找到 BoringSSL AAR 参考: $BORINGSSL_AAR_FILE"
+          fi
 
       - name: Generate CMakeLists.txt
         run: |
-          cat <<'EOF' > merged/CMakeLists.txt
-cmake_minimum_required(VERSION 3.27)
+          # 从上一步获取版本号
+          CURL_VERSION="${{ steps.curl_process.outputs.version }}"
+          echo "使用 Curl 版本 '$CURL_VERSION' 生成 CMakeLists.txt"
 
-project(curl_android)
+          # 使用 cat 和 EOF 创建文件，注意 $ 和 ` 需要转义 (\$)
+          cat << EOF > output/CMakeLists.txt
+          cmake_minimum_required(VERSION 3.27)
 
-add_library(curl_android INTERFACE)
-add_library(curl::curl_static ALIAS curl_android)
+          # 使用提取的版本号
+          project(curl_android VERSION $CURL_VERSION)
 
-function(add_imported_library lib_name lib_path)
-    add_library(${lib_name} STATIC IMPORTED)
-    set_target_properties(${lib_name} PROPERTIES IMPORTED_LOCATION ${lib_path})
-endfunction()
+          add_library(curl_android INTERFACE)
+          add_library(curl::curl_static ALIAS curl_android)
 
-set(LIBS curl nghttp2 nghttp3 ngtcp2 ngtcp2_crypto crypto ssl)
+          function(add_imported_library lib_name lib_path)
+              add_library(\${lib_name} STATIC IMPORTED)
+              # IMPORTED_LOCATION 路径是相对于 CMakeLists.txt 的位置，由下面的 foreach 循环构建
+              set_target_properties(\${lib_name} PROPERTIES IMPORTED_LOCATION \${lib_path})
+          endfunction()
 
-foreach (lib ${LIBS})
-    file(GLOB LIB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/modules/${lib}_static/libs/android.*/*.a")
-    if(LIB_PATH)
-        add_imported_library(${lib} ${LIB_PATH})
-        target_include_directories(curl_android INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/modules/${lib}_static/include)
-    endif()
-endforeach ()
+          # 这些库名需要与解压后 modules/ 目录下的子目录名 (去掉 _static) 匹配
+          set(LIBS curl nghttp2 nghttp3 ngtcp2 ngtcp2_crypto crypto ssl)
 
-target_link_libraries(curl_android INTERFACE
-        curl
-        nghttp2
-        nghttp3
-        ngtcp2
-        ngtcp2_crypto
-        crypto
-        ssl
-        z)
-EOF
+          foreach (lib \${LIBS})
+              # 构建到 .a 文件的相对路径 (相对于 CMakeLists.txt，即 output/ 目录)
+              # CMAKE_ANDROID_ARCH_ABI 将在实际构建时由 Android NDK 工具链提供
+              set(LIB_FILE_PATH "\${CMAKE_CURRENT_SOURCE_DIR}/modules/\${lib}_static/libs/android.\${CMAKE_ANDROID_ARCH_ABI}/lib\${lib}_static.a")
+              # 调用函数添加导入的库
+              add_imported_library(\${lib} \${LIB_FILE_PATH})
+              # 添加头文件目录，也是相对于 CMakeLists.txt
+              target_include_directories(curl_android INTERFACE "\${CMAKE_CURRENT_SOURCE_DIR}/modules/\${lib}_static/include")
+          endforeach ()
 
-      - name: Upload combined output
+          target_link_libraries(curl_android INTERFACE
+                  curl
+                  nghttp2
+                  nghttp3
+                  ngtcp2
+                  ngtcp2_crypto
+                  crypto
+                  ssl
+                  z) # 链接 zlib (通常由 NDK 提供)
+          EOF
+
+          echo "已生成 output/CMakeLists.txt 内容如下:"
+          cat output/CMakeLists.txt
+
+      - name: Verify necessary libraries exist for CMakeLists
+        run: |
+          echo "检查 CMakeLists.txt 中引用的库目录是否存在..."
+          LIBS="curl nghttp2 nghttp3 ngtcp2 ngtcp2_crypto crypto ssl"
+          MISSING=0
+          for lib in $LIBS; do
+            if [ ! -d "output/modules/${lib}_static" ]; then
+              echo "::error::目录 output/modules/${lib}_static 不存在！"
+              MISSING=1
+            elif [ ! -d "output/modules/${lib}_static/include" ]; then
+              echo "::error::目录 output/modules/${lib}_static/include 不存在！"
+              MISSING=1
+            elif [ ! -d "output/modules/${lib}_static/libs" ]; then
+              echo "::error::目录 output/modules/${lib}_static/libs 不存在！"
+              MISSING=1
+            # 注意：我们不能检查具体的 abi 子目录 (如 android.arm64-v8a)，因为它依赖于构建环境
+            # 但可以检查 libs 目录是否为空
+            elif [ -z "$(ls -A output/modules/${lib}_static/libs)" ]; then
+               echo "::error::目录 output/modules/${lib}_static/libs 为空！"
+               MISSING=1
+            fi
+          done
+          if [ "$MISSING" -eq 1 ]; then
+            echo "解压后的文件结构与 CMakeLists.txt 预期不符。请检查下载的 artifact 内容和解压过程。"
+            echo "当前 output/modules 结构："
+            ls -R output/modules
+            exit 1
+          else
+            echo "库目录结构初步检查通过。"
+          fi
+
+      - name: Upload combined artifact
         uses: actions/upload-artifact@v4
         with:
-          name: combined-aar-output
-          path: merged
+          # 使用版本号命名产物
+          name: curl-boringssl-libs-v${{ steps.curl_process.outputs.version }}
+          # 上传 output 目录的所有内容
+          path: output/
+          retention-days: 7 # 设置产物保留时间（可选）

@@ -1,20 +1,4 @@
-name: Build Combined Curl and BoringSSL Libraries V2
-
-on:
-  workflow_dispatch: # 允许手动触发
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read # 需要读取仓库信息 (gh repo view)
-      actions: read  # 需要下载其他仓库的 artifacts (gh run download)
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download latest curl-android artifact
+- name: Download latest curl-android artifact
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -27,178 +11,68 @@ jobs:
             exit 1
           fi
           echo "最新成功运行 ID: $LATEST_RUN_ID"
+
+          echo "列出运行 $LATEST_RUN_ID 的 artifacts..."
+          # 尝试列出该运行的所有 artifact 信息，包括名称和大小
+          gh run view $LATEST_RUN_ID --repo vvb2060/curl-android --json artifacts || echo "::warning::无法列出 artifacts 的详细信息"
+          ARTIFACT_NAMES=$(gh run view $LATEST_RUN_ID --repo vvb2060/curl-android --json artifacts --jq '.artifacts.[].name')
+          echo "可用的 Artifact 名称: $ARTIFACT_NAMES"
+
+          # 检查 'library' 是否在列出的 artifact 名称中
+          # 使用 grep 进行更可靠的检查，-q 表示静默模式，找到即返回 0
+          echo "$ARTIFACT_NAMES" | grep -qxF "library"
+          if [ $? -ne 0 ]; then
+             # 如果精确匹配 "library" 不存在，打印警告并尝试继续（也许 gh download 能处理？）
+             # 或者直接报错退出：
+             echo "::error::在运行 $LATEST_RUN_ID 中未精确找到名为 'library' 的 artifact。可用的名称有: $ARTIFACT_NAMES"
+             exit 1
+          fi
+          echo "确认找到名为 'library' 的 artifact。"
+
           mkdir -p curl_download
           echo "从运行 $LATEST_RUN_ID 下载名为 'library' 的 artifact..."
-          # 注意：即使 artifact 名称是 'library'，gh download 通常会保存为 .zip 文件
+          # 执行下载命令
           gh run download --repo vvb2060/curl-android "$LATEST_RUN_ID" --name "library" --dir curl_download
+          # 检查下载命令的退出码
+          DOWNLOAD_EXIT_CODE=$?
 
-          # 检查下载的文件名，通常 gh 会添加 .zip
+          # 如果下载命令失败
+          if [ $DOWNLOAD_EXIT_CODE -ne 0 ]; then
+             echo "::error::'gh run download' 命令失败，退出码: $DOWNLOAD_EXIT_CODE"
+             echo "请检查 GitHub Token 权限或网络连接。"
+             # 列出目录内容以供调试
+             echo "curl_download 目录当前内容:"
+             ls -l curl_download
+             exit 1
+          fi
+
+          # 如果下载命令成功
+          echo "'gh run download' 命令成功完成。检查下载的文件..."
+          # 优先检查是否下载为 library.zip
           if [ -f curl_download/library.zip ]; then
-            echo "Artifact 'library' 已下载为 curl_download/library.zip"
-            # 重命名以便后续步骤统一处理（可选，如果后续步骤能处理 .zip 就不用）
-            # mv curl_download/library.zip curl_download/curl_library.zip
+            echo "Artifact 'library' 已成功下载为 curl_download/library.zip"
+            # 后续步骤将使用此文件
+          # 检查是否下载为 library (无扩展名)
           elif [ -f curl_download/library ]; then
-             echo "::warning:: Artifact 'library' 下载为 curl_download/library (无扩展名)。假设它是一个 zip 文件。"
-             # 尝试重命名为 .zip 以便 unzip 处理
+             echo "::warning:: Artifact 'library' 下载为 curl_download/library (无扩展名)。将尝试重命名为 .zip"
              mv curl_download/library curl_download/library.zip
              if [ $? -ne 0 ]; then
                 echo "::error::重命名 curl_download/library 失败！"
                 exit 1
              fi
+             echo "已成功重命名为 library.zip"
+          # 检查是否下载为一个包含 'modules' 的目录 (表示 artifact 是目录)
+          elif [ -d curl_download/modules ]; then
+             echo "::warning:: Artifact 'library' 似乎是一个目录 artifact，内容已直接下载到 curl_download/"
+             echo "::error::当前脚本的后续步骤期望一个 zip 文件进行解压，而不是一个目录。请调整脚本以处理目录 artifact 或检查源 artifact。"
+             echo "curl_download 目录内容:"
+             ls -lR curl_download # 递归列出目录内容
+             exit 1
+          # 如果以上都不是，则表示下载成功但内容未知
           else
-            echo "::error::下载 curl-android 的 artifact 'library' 失败！未找到预期文件。"
-            ls -l curl_download # 列出下载目录内容以供调试
+            echo "::error::下载 curl-android 的 artifact 'library' 命令成功，但在 curl_download/ 目录中未找到预期的文件 (library.zip 或 library) 或目录结构 (modules)。"
+            echo "curl_download 目录内容:"
+            ls -lR curl_download # 递归列出目录内容
             exit 1
           fi
-          echo "curl-android 下载完成。"
-
-      - name: Download latest BoringSSL_Android artifact
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "寻找 vvb2060/BoringSSL_Android 的最新成功运行..."
-          DEFAULT_BRANCH=$(gh repo view vvb2060/BoringSSL_Android --json defaultBranchRef --jq .defaultBranchRef.name)
-          echo "默认分支: $DEFAULT_BRANCH"
-          LATEST_RUN_ID=$(gh run list --repo vvb2060/BoringSSL_Android --branch "$DEFAULT_BRANCH" --status success --limit 1 --json databaseId --jq '.[0].databaseId')
-           if [ -z "$LATEST_RUN_ID" ] || [ "$LATEST_RUN_ID" == "null" ]; then
-            echo "::error::找不到 vvb2060/BoringSSL_Android 在分支 '$DEFAULT_BRANCH' 上的成功运行！"
-            exit 1
-          fi
-          echo "最新成功运行 ID: $LATEST_RUN_ID"
-          mkdir -p boringssl_download
-          echo "从运行 $LATEST_RUN_ID 下载 library.zip..."
-          gh run download --repo vvb2060/BoringSSL_Android "$LATEST_RUN_ID" --name "library.zip" --dir boringssl_download
-           if [ ! -f boringssl_download/library.zip ]; then
-            echo "::error::下载 BoringSSL_Android 的 library.zip 失败！"
-            exit 1
-          fi
-          echo "BoringSSL_Android 下载完成。"
-
-      - name: Prepare output directory
-        run: mkdir -p output/modules
-
-      - name: Process curl-android artifact and Extract Version
-        id: curl_process
-        run: |
-          echo "解压 curl-android (library.zip) 到 output 目录..."
-          # 假设下载的文件最终是 library.zip (经过上一步处理后)
-          unzip -q curl_download/library.zip -d output
-          echo "检查解压后的 curl 结构 (部分):"
-          ls -R output/modules | head -n 20
-
-          echo "在 curl-android artifact 中查找 AAR 文件以提取版本号..."
-          mkdir curl_temp_extract
-          unzip -q curl_download/library.zip -d curl_temp_extract
-          CURL_AAR_FILE=$(find curl_temp_extract -type f -name '*lto*.aar' | head -n 1)
-          rm -rf curl_temp_extract
-
-          if [ -z "$CURL_AAR_FILE" ]; then
-            echo "::warning::在 curl-android artifact 中未找到包含 'lto' 的 AAR 文件来确定版本号。将使用 'unknown'。"
-            CURL_VERSION="unknown"
-          else
-            echo "找到用于版本参考的 AAR: $CURL_AAR_FILE"
-            CURL_AAR_BASENAME=$(basename "$CURL_AAR_FILE")
-            TEMP_VERSION=${CURL_AAR_BASENAME#curl-}
-            CURL_VERSION=${TEMP_VERSION%-lto*}
-            echo "提取到的 curl 版本号: $CURL_VERSION"
-          fi
-          echo "version=$CURL_VERSION" >> $GITHUB_OUTPUT
-
-      - name: Process BoringSSL_Android artifact
-        run: |
-          echo "解压 BoringSSL_Android library.zip 到 output 目录..."
-          unzip -q boringssl_download/library.zip -d output
-          echo "检查合并后的结构 (部分):"
-          ls -R output/modules | head -n 20
-          echo "检查 crypto/ssl 库:"
-          find output/modules -name 'libcrypto_static.a' > /dev/null || echo "::warning::未找到 libcrypto_static.a!"
-          find output/modules -name 'libssl_static.a' > /dev/null || echo "::warning::未找到 libssl_static.a!"
-
-          echo "在 BoringSSL_Android artifact 中查找 AAR 文件 (按要求)..."
-          mkdir boringssl_temp_extract
-          unzip -q boringssl_download/library.zip -d boringssl_temp_extract
-          BORINGSSL_AAR_FILE=$(find boringssl_temp_extract -type f -name '*lto*.aar' | head -n 1)
-          rm -rf boringssl_temp_extract
-          if [ -z "$BORINGSSL_AAR_FILE" ]; then
-            echo "::warning::在 BoringSSL artifact 中未找到包含 'lto' 的 AAR 文件。"
-          else
-            echo "找到 BoringSSL AAR 参考: $BORINGSSL_AAR_FILE"
-          fi
-
-      - name: Generate CMakeLists.txt
-        run: |
-          CURL_VERSION="${{ steps.curl_process.outputs.version }}"
-          echo "使用 Curl 版本 '$CURL_VERSION' 生成 CMakeLists.txt"
-
-          # 使用 cat 和 EOF 创建文件，注意 $ 和 ` 需要转义 (\$)
-          cat << EOF > output/CMakeLists.txt
-          cmake_minimum_required(VERSION 3.27)
-
-          project(curl_android VERSION $CURL_VERSION)
-
-          add_library(curl_android INTERFACE)
-          add_library(curl::curl_static ALIAS curl_android)
-
-          function(add_imported_library lib_name lib_path)
-              add_library(\${lib_name} STATIC IMPORTED)
-              set_target_properties(\${lib_name} PROPERTIES IMPORTED_LOCATION \${lib_path})
-          endfunction()
-
-          set(LIBS curl nghttp2 nghttp3 ngtcp2 ngtcp2_crypto crypto ssl)
-
-          foreach (lib \${LIBS})
-              # 路径相对于 CMakeLists.txt (CMAKE_CURRENT_SOURCE_DIR), 指向解压后的结构
-              set(LIB_FILE_PATH "\${CMAKE_CURRENT_SOURCE_DIR}/modules/\${lib}_static/libs/android.\${CMAKE_ANDROID_ARCH_ABI}/lib\${lib}_static.a")
-              add_imported_library(\${lib} \${LIB_FILE_PATH})
-              target_include_directories(curl_android INTERFACE "\${CMAKE_CURRENT_SOURCE_DIR}/modules/\${lib}_static/include")
-          endforeach ()
-
-          target_link_libraries(curl_android INTERFACE
-                  curl
-                  nghttp2
-                  nghttp3
-                  ngtcp2
-                  ngtcp2_crypto
-                  crypto
-                  ssl
-                  z) # 链接 zlib (通常由 NDK 提供)
-          EOF
-
-          echo "已生成 output/CMakeLists.txt 内容如下:"
-          cat output/CMakeLists.txt
-
-      - name: Verify necessary libraries exist for CMakeLists
-        run: |
-          echo "检查 CMakeLists.txt 中引用的库目录是否存在..."
-          LIBS="curl nghttp2 nghttp3 ngtcp2 ngtcp2_crypto crypto ssl"
-          MISSING=0
-          for lib in $LIBS; do
-            if [ ! -d "output/modules/${lib}_static" ]; then
-              echo "::error::目录 output/modules/${lib}_static 不存在！"
-              MISSING=1
-            elif [ ! -d "output/modules/${lib}_static/include" ]; then
-              echo "::error::目录 output/modules/${lib}_static/include 不存在！"
-              MISSING=1
-            elif [ ! -d "output/modules/${lib}_static/libs" ]; then
-              echo "::error::目录 output/modules/${lib}_static/libs 不存在！"
-              MISSING=1
-            elif [ -z "$(ls -A output/modules/${lib}_static/libs)" ]; then
-               echo "::error::目录 output/modules/${lib}_static/libs 为空！"
-               MISSING=1
-            fi
-          done
-          if [ "$MISSING" -eq 1 ]; then
-            echo "解压后的文件结构与 CMakeLists.txt 预期不符。请检查下载的 artifact 内容和解压过程。"
-            echo "当前 output/modules 结构："
-            ls -R output/modules
-            exit 1
-          else
-            echo "库目录结构初步检查通过。"
-          fi
-
-      - name: Upload combined artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: curl-boringssl-libs-v${{ steps.curl_process.outputs.version }}
-          path: output/
-          retention-days: 7 # 设置产物保留时间（可选）
+          echo "curl-android 下载和验证完成。"

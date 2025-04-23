@@ -82,7 +82,7 @@ jobs:
         run: |
           mkdir -p merged
           unzip "${{ steps.find_curl_aar.outputs.aar_path }}" -d merged
-          unzip "${{ steps.find_ssl_aar.outputs.aar_path }}" -d merged
+          unzip -n "${{ steps.find_ssl_aar.outputs.aar_path }}" -d merged
 
       # -------- Step 4: Generate CMakeLists.txt --------
       - name: Generate CMakeLists.txt

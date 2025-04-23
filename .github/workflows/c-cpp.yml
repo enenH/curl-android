@@ -1,0 +1,43 @@
+name: Download curl-android artifact
+
+on:
+  workflow_dispatch:
+
+jobs:
+  download-artifact:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get latest successful run ID
+        id: get_run
+        run: |
+          RUN_ID=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/vvb2060/curl-android/actions/runs \
+            | jq '.workflow_runs[] | select(.conclusion=="success") | .id' \
+            | head -n 1)
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+
+      - name: Get artifact ID for library.zip
+        id: get_artifact
+        run: |
+          ARTIFACT_ID=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/vvb2060/curl-android/actions/runs/${{ steps.get_run.outputs.run_id }}/artifacts \
+            | jq '.artifacts[] | select(.name=="library") | .id')
+          echo "artifact_id=$ARTIFACT_ID" >> $GITHUB_OUTPUT
+
+      - name: Download artifact
+        run: |
+          curl -L \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -o library.zip \
+            https://api.github.com/repos/vvb2060/curl-android/actions/artifacts/${{ steps.get_artifact.outputs.artifact_id }}/zip
+
+      - name: Unzip artifact
+        run: |
+          unzip library.zip -d extracted
+
+      - name: List extracted files
+        run: |
+          echo "Files in extracted directory:"
+          find extracted -type f

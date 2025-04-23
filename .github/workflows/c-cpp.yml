@@ -2,6 +2,10 @@ name: Download and combine AARs
 
 on:
   workflow_dispatch:
+    inputs:
+      release_token:
+        description: 'Token to use for creating the release (leave empty to use GITHUB_TOKEN)'
+        required: false
 
 jobs:
   combine:
@@ -41,8 +45,20 @@ jobs:
         run: |
           AAR_PATH=$(find curl -type f -name "*lto*.aar" | head -n 1)
           echo "aar_path=$AAR_PATH" >> $GITHUB_OUTPUT
+          
+          # More robust version extraction with debug output
           BASENAME=$(basename "$AAR_PATH")
+          echo "Found AAR file: $BASENAME"
+          
           VERSION=$(echo $BASENAME | sed -n 's/curl-\(.*\)-lto.aar/\1/p')
+          if [ -z "$VERSION" ]; then
+            echo "Warning: Failed to extract version from $BASENAME"
+            # Fallback to a default version based on date
+            VERSION="$(date +%Y%m%d)"
+            echo "Using fallback version: $VERSION"
+          fi
+          
+          echo "Extracted version: $VERSION"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       # -------- Step 2: Download BoringSSL_Android artifact --------
@@ -122,6 +138,7 @@ jobs:
       - name: Create release archive
         run: |
           RELEASE_VERSION="${{ steps.find_curl_aar.outputs.version }}"
+          echo "Creating archive with version: $RELEASE_VERSION"
           cd merged
           zip -r "../curl-boringssl-android-${RELEASE_VERSION}.zip" .
 
@@ -129,10 +146,26 @@ jobs:
       - name: Create GitHub Release
         id: create_release
         uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ github.event.inputs.release_token || secrets.GITHUB_TOKEN }}
         with:
           tag_name: v${{ steps.find_curl_aar.outputs.version }}
           name: Curl+BoringSSL Android v${{ steps.find_curl_aar.outputs.version }}
+          body: |
+            Combined Curl v${{ steps.find_curl_aar.outputs.version }} with BoringSSL for Android.
+            
+            This release was automatically generated from the latest successful builds of:
+            - [vvb2060/curl-android](https://github.com/vvb2060/curl-android)
+            - [vvb2060/BoringSSL_Android](https://github.com/vvb2060/BoringSSL_Android)
           files: curl-boringssl-android-${{ steps.find_curl_aar.outputs.version }}.zip
           draft: false
           prerelease: false
-          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Fallback to uploading as artifact if release creation fails
+      - name: Upload as artifact if release fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: curl-boringssl-android-${{ steps.find_curl_aar.outputs.version }}
+          path: curl-boringssl-android-${{ steps.find_curl_aar.outputs.version }}.zip
+          retention-days: 30

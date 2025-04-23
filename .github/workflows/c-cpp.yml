@@ -1,10 +1,10 @@
-name: Download curl-android artifact
+name: Download and process curl-android artifact
 
 on:
   workflow_dispatch:
 
 jobs:
-  download-artifact:
+  extract-aar:
     runs-on: ubuntu-latest
     steps:
       - name: Get latest successful run ID
@@ -26,18 +26,29 @@ jobs:
             | jq '.artifacts[] | select(.name=="library") | .id')
           echo "artifact_id=$ARTIFACT_ID" >> $GITHUB_OUTPUT
 
-      - name: Download artifact
+      - name: Download library.zip
         run: |
           curl -L \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -o library.zip \
             https://api.github.com/repos/vvb2060/curl-android/actions/artifacts/${{ steps.get_artifact.outputs.artifact_id }}/zip
 
-      - name: Unzip artifact
-        run: |
-          unzip library.zip -d extracted
+      - name: Unzip library.zip
+        run: unzip library.zip -d extracted
 
-      - name: List extracted files
+      - name: Find first .aar file containing 'lto'
+        id: find_aar
         run: |
-          echo "Files in extracted directory:"
-          find extracted -type f
+          AAR_FILE=$(find extracted -type f -name "*lto*.aar" | head -n 1)
+          echo "aar_file=$AAR_FILE" >> $GITHUB_OUTPUT
+          echo "Found AAR file: $AAR_FILE"
+
+      - name: Unzip .aar file
+        run: |
+          mkdir aar_contents
+          unzip "${{ steps.find_aar.outputs.aar_file }}" -d aar_contents
+
+      - name: List files inside .aar
+        run: |
+          echo "Files inside the .aar file:"
+          find aar_contents -type f

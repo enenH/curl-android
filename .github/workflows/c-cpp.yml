@@ -77,7 +77,7 @@ jobs:
           echo "        z)" >> merged/CMakeLists.txt
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: merged-cmake
           path: merged

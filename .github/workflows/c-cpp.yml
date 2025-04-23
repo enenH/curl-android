@@ -1,103 +1,129 @@
-name: Build and Publish curl_android
+name: Download and combine AARs
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  combine:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y unzip jq
 
-    - name: Setup environment
-      run: |
-        mkdir -p artifacts
-        mkdir -p combined_libs
+      # -------- Step 1: Download curl-android artifact --------
+      - name: Get latest curl-android run ID
+        id: get_curl_run
+        run: |
+          RUN_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/vvb2060/curl-android/actions/runs" \
+            | jq '.workflow_runs[] | select(.conclusion=="success") | .id' | head -n 1)
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
 
-    # 下载并处理curl-android
-    - name: Download curl-android artifact
-      uses: dawidd6/action-download-artifact@v2
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        repo: vvb2060/curl-android
-        workflow: <curl-android-workflow-name>.yml  # 替换实际workflow文件名
-        name: library.zip
-        path: artifacts/curl
+      - name: Get curl-android artifact ID
+        id: get_curl_artifact
+        run: |
+          ARTIFACT_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/vvb2060/curl-android/actions/runs/${{ steps.get_curl_run.outputs.run_id }}/artifacts" \
+            | jq '.artifacts[] | select(.name=="library") | .id')
+          echo "artifact_id=$ARTIFACT_ID" >> $GITHUB_OUTPUT
 
-    - name: Process curl-android
-      run: |
-        unzip artifacts/curl/library.zip -d artifacts/curl
-        
-        # 查找aar文件并提取版本号
-        AAR_PATH=$(find artifacts/curl -name "*lto*.aar" -print -quit)
-        echo "Found AAR: $AAR_PATH"
-        VERSION=$(basename "$AAR_PATH" | sed -n 's/curl-\(.*\)-lto.*/\1/p')
-        echo "VERSION=$VERSION" >> $GITHUB_ENV
-        
-        # 解压aar
-        unzip "$AAR_PATH" -d combined_libs/curl
+      - name: Download curl-android artifact
+        run: |
+          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -o curl.zip \
+            "https://api.github.com/repos/vvb2060/curl-android/actions/artifacts/${{ steps.get_curl_artifact.outputs.artifact_id }}/zip"
 
-    # 下载并处理BoringSSL_Android
-    - name: Download BoringSSL artifact
-      uses: dawidd6/action-download-artifact@v2
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        repo: vvb2060/BoringSSL_Android
-        workflow: <boringssl-workflow-name>.yml  # 替换实际workflow文件名
-        name: library.zip
-        path: artifacts/boringssl
+      - name: Unzip curl.zip
+        run: unzip curl.zip -d curl
 
-    - name: Process BoringSSL
-      run: |
-        unzip artifacts/boringssl/library.zip -d artifacts/boringssl
-        
-        # 查找aar文件
-        BORING_AAR=$(find artifacts/boringssl -name "*lto*.aar" -print -quit)
-        echo "Found BoringSSL AAR: $BORING_AAR"
-        
-        # 解压aar
-        unzip "$BORING_AAR" -d combined_libs/boringssl
+      - name: Find curl .aar and extract version
+        id: find_curl_aar
+        run: |
+          AAR_PATH=$(find curl -type f -name "*lto*.aar" | head -n 1)
+          echo "aar_path=$AAR_PATH" >> $GITHUB_OUTPUT
+          BASENAME=$(basename "$AAR_PATH")
+          VERSION=$(echo $BASENAME | sed -n 's/curl-\(.*\)-lto.aar/\1/p')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-    # 生成CMakeLists.txt
-    - name: Generate CMakeLists
-      run: |
-        cat << EOF > CMakeLists.txt
-        cmake_minimum_required(VERSION 3.27)
+      # -------- Step 2: Download BoringSSL_Android artifact --------
+      - name: Get latest BoringSSL run ID
+        id: get_ssl_run
+        run: |
+          RUN_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/vvb2060/BoringSSL_Android/actions/runs" \
+            | jq '.workflow_runs[] | select(.conclusion=="success") | .id' | head -n 1)
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
 
-        project(curl_android)
+      - name: Get BoringSSL artifact ID
+        id: get_ssl_artifact
+        run: |
+          ARTIFACT_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/vvb2060/BoringSSL_Android/actions/runs/${{ steps.get_ssl_run.outputs.run_id }}/artifacts" \
+            | jq '.artifacts[] | select(.name=="library") | .id')
+          echo "artifact_id=$ARTIFACT_ID" >> $GITHUB_OUTPUT
 
-        add_library(curl_android INTERFACE)
-        add_library(curl::curl_static ALIAS curl_android)
+      - name: Download BoringSSL artifact
+        run: |
+          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -o boring.zip \
+            "https://api.github.com/repos/vvb2060/BoringSSL_Android/actions/artifacts/${{ steps.get_ssl_artifact.outputs.artifact_id }}/zip"
 
-        function(add_imported_library lib_name lib_path)
-            add_library(\${lib_name} STATIC IMPORTED)
-            set_target_properties(\${lib_name} PROPERTIES IMPORTED_LOCATION \${lib_path})
-        endfunction()
+      - name: Unzip boring.zip
+        run: unzip boring.zip -d boring
 
-        set(LIBS curl nghttp2 nghttp3 ngtcp2 ngtcp2_crypto crypto ssl)
+      - name: Find BoringSSL .aar
+        id: find_ssl_aar
+        run: |
+          AAR_PATH=$(find boring -type f -name "*lto*.aar" | head -n 1)
+          echo "aar_path=$AAR_PATH" >> $GITHUB_OUTPUT
 
-        foreach (lib \${LIBS})
-            add_imported_library(\${lib} \${CMAKE_CURRENT_SOURCE_DIR}/combined_libs/jni/\${CMAKE_ANDROID_ARCH_ABI}/lib\${lib}_static.a)
-            target_include_directories(curl_android INTERFACE \${CMAKE_CURRENT_SOURCE_DIR}/combined_libs/include/\${lib})
-        endforeach ()
+      # -------- Step 3: Extract both AARs --------
+      - name: Extract all .aar files
+        run: |
+          mkdir -p merged
+          unzip "${{ steps.find_curl_aar.outputs.aar_path }}" -d merged
+          unzip "${{ steps.find_ssl_aar.outputs.aar_path }}" -d merged
 
-        target_link_libraries(curl_android INTERFACE
-                curl
-                nghttp2
-                nghttp3
-                ngtcp2
-                ngtcp2_crypto
-                crypto
-                ssl
-                z)
-        EOF
+      # -------- Step 4: Generate CMakeLists.txt --------
+      - name: Generate CMakeLists.txt
+        run: |
+          cat > merged/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.27)
+          
+          project(curl_android)
+          
+          add_library(curl_android INTERFACE)
+          add_library(curl::curl_static ALIAS curl_android)
+          
+          function(add_imported_library lib_name lib_path)
+              add_library(${lib_name} STATIC IMPORTED)
+              set_target_properties(${lib_name} PROPERTIES IMPORTED_LOCATION ${lib_path})
+          endfunction()
+          
+          set(LIBS curl nghttp2 nghttp3 ngtcp2 ngtcp2_crypto crypto ssl)
+          
+          foreach (lib ${LIBS})
+              file(GLOB LIB_PATH "merged/modules/${lib}_static/libs/android.*/*.a")
+              if(LIB_PATH)
+                  add_imported_library(${lib} ${LIB_PATH})
+                  target_include_directories(curl_android INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/modules/${lib}_static/include)
+              endif()
+          endforeach()
+          
+          target_link_libraries(curl_android INTERFACE
+                  curl
+                  nghttp2
+                  nghttp3
+                  ngtcp2
+                  ngtcp2_crypto
+                  crypto
+                  ssl
+                  z)
+          EOF
 
-    # 上传产物
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: curl_android_package
-        path: |
-          CMakeLists.txt
-          combined_libs/
+      # -------- Step 5: Upload final artifact --------
+      - name: Upload merged output
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-curl-boringssl
+          path: merged

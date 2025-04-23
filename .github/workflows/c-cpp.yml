@@ -10,7 +10,6 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y unzip jq
 
-      # --- Download curl-android artifact ---
       - name: Get latest curl-android run ID
         id: curl_run
         run: |
@@ -43,7 +42,6 @@ jobs:
           echo "aar_path=$AAR" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      # --- Download BoringSSL_Android artifact ---
       - name: Get latest boringssl run ID
         id: ssl_run
         run: |
@@ -73,17 +71,15 @@ jobs:
           AAR=$(find ssl -type f -name "*lto*.aar" | head -n 1)
           echo "aar_path=$AAR" >> $GITHUB_OUTPUT
 
-      # --- Extract all .aar files ---
       - name: Extract AARs
         run: |
           mkdir merged
           unzip "${{ steps.curl_aar.outputs.aar_path }}" -d merged
           unzip "${{ steps.ssl_aar.outputs.aar_path }}" -d merged
 
-      # --- Generate CMakeLists.txt ---
       - name: Generate CMakeLists.txt
         run: |
-          cat > merged/CMakeLists.txt <<EOF
+          cat <<'EOF' > merged/CMakeLists.txt
 cmake_minimum_required(VERSION 3.27)
 
 project(curl_android)
@@ -92,17 +88,17 @@ add_library(curl_android INTERFACE)
 add_library(curl::curl_static ALIAS curl_android)
 
 function(add_imported_library lib_name lib_path)
-    add_library(\${lib_name} STATIC IMPORTED)
-    set_target_properties(\${lib_name} PROPERTIES IMPORTED_LOCATION \${lib_path})
+    add_library(${lib_name} STATIC IMPORTED)
+    set_target_properties(${lib_name} PROPERTIES IMPORTED_LOCATION ${lib_path})
 endfunction()
 
 set(LIBS curl nghttp2 nghttp3 ngtcp2 ngtcp2_crypto crypto ssl)
 
-foreach (lib \${LIBS})
-    file(GLOB LIB_PATH "\${CMAKE_CURRENT_SOURCE_DIR}/modules/\${lib}_static/libs/android.*/*.a")
+foreach (lib ${LIBS})
+    file(GLOB LIB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/modules/${lib}_static/libs/android.*/*.a")
     if(LIB_PATH)
-        add_imported_library(\${lib} \${LIB_PATH})
-        target_include_directories(curl_android INTERFACE \${CMAKE_CURRENT_SOURCE_DIR}/modules/\${lib}_static/include)
+        add_imported_library(${lib} ${LIB_PATH})
+        target_include_directories(curl_android INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/modules/${lib}_static/include)
     endif()
 endforeach ()
 
@@ -117,7 +113,6 @@ target_link_libraries(curl_android INTERFACE
         z)
 EOF
 
-      # --- Upload final artifact ---
       - name: Upload combined output
         uses: actions/upload-artifact@v4
         with:

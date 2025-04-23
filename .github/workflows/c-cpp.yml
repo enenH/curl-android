@@ -1,103 +1,83 @@
-name: Build and Publish curl_android
+name: Build and Upload
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Setup environment
-      run: |
-        mkdir -p artifacts
-        mkdir -p combined_libs
+      - name: Download curl-android library.zip
+        run: |
+          curl -sL "https://api.github.com/repos/vvb2060/curl-android/actions/runs" | jq -r '.workflow_runs[0].artifacts_url' | xargs -I {} curl -sL -H "Accept: application/vnd.github.v3+json" {} | jq -r '.[0].archive_download_url' | xargs -I {} curl -sL -o curl-android-library.zip {}
 
-    # 下载并处理curl-android
-    - name: Download curl-android artifact
-      uses: dawidd6/action-download-artifact@v2
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        repo: vvb2060/curl-android
-        workflow: <curl-android-workflow-name>.yml  # 替换实际workflow文件名
-        name: library.zip
-        path: artifacts/curl
+      - name: Download BoringSSL_Android library.zip
+        run: |
+          curl -sL "https://api.github.com/repos/vvb2060/BoringSSL_Android/actions/runs" | jq -r '.workflow_runs[0].artifacts_url' | xargs -I {} curl -sL -H "Accept: application/vnd.github.v3+json" {} | jq -r '.[0].archive_download_url' | xargs -I {} curl -sL -o BoringSSL-android-library.zip {}
 
-    - name: Process curl-android
-      run: |
-        unzip artifacts/curl/library.zip -d artifacts/curl
-        
-        # 查找aar文件并提取版本号
-        AAR_PATH=$(find artifacts/curl -name "*lto*.aar" -print -quit)
-        echo "Found AAR: $AAR_PATH"
-        VERSION=$(basename "$AAR_PATH" | sed -n 's/curl-\(.*\)-lto.*/\1/p')
-        echo "VERSION=$VERSION" >> $GITHUB_ENV
-        
-        # 解压aar
-        unzip "$AAR_PATH" -d combined_libs/curl
+      - name: Extract curl-android library.zip
+        run: |
+          mkdir curl-android
+          unzip -q curl-android-library.zip -d curl-android
+          
+      - name: Extract BoringSSL_Android library.zip
+        run: |
+          mkdir BoringSSL-android
+          unzip -q BoringSSL-android-library.zip -d BoringSSL-android
 
-    # 下载并处理BoringSSL_Android
-    - name: Download BoringSSL artifact
-      uses: dawidd6/action-download-artifact@v2
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        repo: vvb2060/BoringSSL_Android
-        workflow: <boringssl-workflow-name>.yml  # 替换实际workflow文件名
-        name: library.zip
-        path: artifacts/boringssl
+      - name: Extract .aar files and get version number
+        run: |
+          curl_aar=$(find curl-android -name "*.aar" -and -name "*lto*" | head -n 1)
+          boring_ssl_aar=$(find BoringSSL-android -name "*.aar" -and -name "*lto*" | head -n 1)
 
-    - name: Process BoringSSL
-      run: |
-        unzip artifacts/boringssl/library.zip -d artifacts/boringssl
-        
-        # 查找aar文件
-        BORING_AAR=$(find artifacts/boringssl -name "*lto*.aar" -print -quit)
-        echo "Found BoringSSL AAR: $BORING_AAR"
-        
-        # 解压aar
-        unzip "$BORING_AAR" -d combined_libs/boringssl
+          curl_version=$(basename "$curl_aar" | sed -E 's/curl-([^ ]+)-lto\.aar/\1/')
+          echo "curl version: $curl_version"
+          echo "curl_version=$curl_version" >> $GITHUB_ENV
 
-    # 生成CMakeLists.txt
-    - name: Generate CMakeLists
-      run: |
-        cat << EOF > CMakeLists.txt
-        cmake_minimum_required(VERSION 3.27)
+      - name: Generate CMakeLists.txt
+        run: |
+          mkdir -p merged
+          echo "cmake_minimum_required(VERSION 3.27)" > merged/CMakeLists.txt
+          echo "" >> merged/CMakeLists.txt
+          echo "project(curl_android)" >> merged/CMakeLists.txt
+          echo "" >> merged/CMakeLists.txt
+          echo "add_library(curl_android INTERFACE)" >> merged/CMakeLists.txt
+          echo "add_library(curl::curl_static ALIAS curl_android)" >> merged/CMakeLists.txt
+          echo "" >> merged/CMakeLists.txt
+          echo "function(add_imported_library lib_name lib_path)" >> merged/CMakeLists.txt
+          echo "    add_library(\${lib_name} STATIC IMPORTED)" >> merged/CMakeLists.txt
+          echo "    set_target_properties(\${lib_name} PROPERTIES IMPORTED_LOCATION \${lib_path})" >> merged/CMakeLists.txt
+          echo "endfunction()" >> merged/CMakeLists.txt
+          echo "" >> merged/CMakeLists.txt
+          echo "set(LIBS curl nghttp2 nghttp3 ngtcp2 ngtcp2_crypto crypto ssl)" >> merged/CMakeLists.txt
+          echo "" >> merged/CMakeLists.txt
+          echo "foreach (lib \${LIBS})" >> merged/CMakeLists.txt
+          echo "    file(GLOB LIB_PATH \"\${CMAKE_CURRENT_SOURCE_DIR}/modules/\${lib}_static/libs/android.*/*.a\")" >> merged/CMakeLists.txt
+          echo "    if(LIB_PATH)" >> merged/CMakeLists.txt
+          echo "        add_imported_library(\${lib} \${LIB_PATH})" >> merged/CMakeLists.txt
+          echo "        target_include_directories(curl_android INTERFACE \${CMAKE_CURRENT_SOURCE_DIR}/modules/\${lib}_static/include)" >> merged/CMakeLists.txt
+          echo "    endif()" >> merged/CMakeLists.txt
+          echo "endforeach ()" >> merged/CMakeLists.txt
+          echo "" >> merged/CMakeLists.txt
+          echo "target_link_libraries(curl_android INTERFACE" >> merged/CMakeLists.txt
+          echo "        curl" >> merged/CMakeLists.txt
+          echo "        nghttp2" >> merged/CMakeLists.txt
+          echo "        nghttp3" >> merged/CMakeLists.txt
+          echo "        ngtcp2" >> merged/CMakeLists.txt
+          echo "        ngtcp2_crypto" >> merged/CMakeLists.txt
+          echo "        crypto" >> merged/CMakeLists.txt
+          echo "        ssl" >> merged/CMakeLists.txt
+          echo "        z)" >> merged/CMakeLists.txt
 
-        project(curl_android)
-
-        add_library(curl_android INTERFACE)
-        add_library(curl::curl_static ALIAS curl_android)
-
-        function(add_imported_library lib_name lib_path)
-            add_library(\${lib_name} STATIC IMPORTED)
-            set_target_properties(\${lib_name} PROPERTIES IMPORTED_LOCATION \${lib_path})
-        endfunction()
-
-        set(LIBS curl nghttp2 nghttp3 ngtcp2 ngtcp2_crypto crypto ssl)
-
-        foreach (lib \${LIBS})
-            add_imported_library(\${lib} \${CMAKE_CURRENT_SOURCE_DIR}/combined_libs/jni/\${CMAKE_ANDROID_ARCH_ABI}/lib\${lib}_static.a)
-            target_include_directories(curl_android INTERFACE \${CMAKE_CURRENT_SOURCE_DIR}/combined_libs/include/\${lib})
-        endforeach ()
-
-        target_link_libraries(curl_android INTERFACE
-                curl
-                nghttp2
-                nghttp3
-                ngtcp2
-                ngtcp2_crypto
-                crypto
-                ssl
-                z)
-        EOF
-
-    # 上传产物
-    - name: Upload artifact
-      uses: actions/upload-artifact@v3
-      with:
-        name: curl_android_package
-        path: |
-          CMakeLists.txt
-          combined_libs/
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: merged-cmake
+          path: merged

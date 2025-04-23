@@ -1,78 +1,103 @@
-- name: Download latest curl-android artifact
-         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "寻找 vvb2060/curl-android 的最新成功运行..."
-          DEFAULT_BRANCH=$(gh repo view vvb2060/curl-android --json defaultBranchRef --jq .defaultBranchRef.name)
-          echo "默认分支: $DEFAULT_BRANCH"
-          LATEST_RUN_ID=$(gh run list --repo vvb2060/curl-android --branch "$DEFAULT_BRANCH" --status success --limit 1 --json databaseId --jq '.[0].databaseId')
-          if [ -z "$LATEST_RUN_ID" ] || [ "$LATEST_RUN_ID" == "null" ]; then
-            echo "::error::找不到 vvb2060/curl-android 在分支 '$DEFAULT_BRANCH' 上的成功运行！"
-            exit 1
-          fi
-          echo "最新成功运行 ID: $LATEST_RUN_ID"
+name: Build and Publish curl_android
 
-          echo "列出运行 $LATEST_RUN_ID 的 artifacts..."
-          # 尝试列出该运行的所有 artifact 信息，包括名称和大小
-          gh run view $LATEST_RUN_ID --repo vvb2060/curl-android --json artifacts || echo "::warning::无法列出 artifacts 的详细信息"
-          ARTIFACT_NAMES=$(gh run view $LATEST_RUN_ID --repo vvb2060/curl-android --json artifacts --jq '.artifacts.[].name')
-          echo "可用的 Artifact 名称: $ARTIFACT_NAMES"
+on:
+  workflow_dispatch:
 
-          # 检查 'library' 是否在列出的 artifact 名称中
-          # 使用 grep 进行更可靠的检查，-q 表示静默模式，找到即返回 0
-          echo "$ARTIFACT_NAMES" | grep -qxF "library"
-          if [ $? -ne 0 ]; then
-             # 如果精确匹配 "library" 不存在，打印警告并尝试继续（也许 gh download 能处理？）
-             # 或者直接报错退出：
-             echo "::error::在运行 $LATEST_RUN_ID 中未精确找到名为 'library' 的 artifact。可用的名称有: $ARTIFACT_NAMES"
-             exit 1
-          fi
-          echo "确认找到名为 'library' 的 artifact。"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-          mkdir -p curl_download
-          echo "从运行 $LATEST_RUN_ID 下载名为 'library' 的 artifact..."
-          # 执行下载命令
-          gh run download --repo vvb2060/curl-android "$LATEST_RUN_ID" --name "library" --dir curl_download
-          # 检查下载命令的退出码
-          DOWNLOAD_EXIT_CODE=$?
+    - name: Setup environment
+      run: |
+        mkdir -p artifacts
+        mkdir -p combined_libs
 
-          # 如果下载命令失败
-          if [ $DOWNLOAD_EXIT_CODE -ne 0 ]; then
-             echo "::error::'gh run download' 命令失败，退出码: $DOWNLOAD_EXIT_CODE"
-             echo "请检查 GitHub Token 权限或网络连接。"
-             # 列出目录内容以供调试
-             echo "curl_download 目录当前内容:"
-             ls -l curl_download
-             exit 1
-          fi
+    # 下载并处理curl-android
+    - name: Download curl-android artifact
+      uses: dawidd6/action-download-artifact@v2
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        repo: vvb2060/curl-android
+        workflow: <curl-android-workflow-name>.yml  # 替换实际workflow文件名
+        name: library.zip
+        path: artifacts/curl
 
-          # 如果下载命令成功
-          echo "'gh run download' 命令成功完成。检查下载的文件..."
-          # 优先检查是否下载为 library.zip
-          if [ -f curl_download/library.zip ]; then
-            echo "Artifact 'library' 已成功下载为 curl_download/library.zip"
-            # 后续步骤将使用此文件
-          # 检查是否下载为 library (无扩展名)
-          elif [ -f curl_download/library ]; then
-             echo "::warning:: Artifact 'library' 下载为 curl_download/library (无扩展名)。将尝试重命名为 .zip"
-             mv curl_download/library curl_download/library.zip
-             if [ $? -ne 0 ]; then
-                echo "::error::重命名 curl_download/library 失败！"
-                exit 1
-             fi
-             echo "已成功重命名为 library.zip"
-          # 检查是否下载为一个包含 'modules' 的目录 (表示 artifact 是目录)
-          elif [ -d curl_download/modules ]; then
-             echo "::warning:: Artifact 'library' 似乎是一个目录 artifact，内容已直接下载到 curl_download/"
-             echo "::error::当前脚本的后续步骤期望一个 zip 文件进行解压，而不是一个目录。请调整脚本以处理目录 artifact 或检查源 artifact。"
-             echo "curl_download 目录内容:"
-             ls -lR curl_download # 递归列出目录内容
-             exit 1
-          # 如果以上都不是，则表示下载成功但内容未知
-          else
-            echo "::error::下载 curl-android 的 artifact 'library' 命令成功，但在 curl_download/ 目录中未找到预期的文件 (library.zip 或 library) 或目录结构 (modules)。"
-            echo "curl_download 目录内容:"
-            ls -lR curl_download # 递归列出目录内容
-            exit 1
-          fi
-          echo "curl-android 下载和验证完成。"
+    - name: Process curl-android
+      run: |
+        unzip artifacts/curl/library.zip -d artifacts/curl
+        
+        # 查找aar文件并提取版本号
+        AAR_PATH=$(find artifacts/curl -name "*lto*.aar" -print -quit)
+        echo "Found AAR: $AAR_PATH"
+        VERSION=$(basename "$AAR_PATH" | sed -n 's/curl-\(.*\)-lto.*/\1/p')
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        
+        # 解压aar
+        unzip "$AAR_PATH" -d combined_libs/curl
+
+    # 下载并处理BoringSSL_Android
+    - name: Download BoringSSL artifact
+      uses: dawidd6/action-download-artifact@v2
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        repo: vvb2060/BoringSSL_Android
+        workflow: <boringssl-workflow-name>.yml  # 替换实际workflow文件名
+        name: library.zip
+        path: artifacts/boringssl
+
+    - name: Process BoringSSL
+      run: |
+        unzip artifacts/boringssl/library.zip -d artifacts/boringssl
+        
+        # 查找aar文件
+        BORING_AAR=$(find artifacts/boringssl -name "*lto*.aar" -print -quit)
+        echo "Found BoringSSL AAR: $BORING_AAR"
+        
+        # 解压aar
+        unzip "$BORING_AAR" -d combined_libs/boringssl
+
+    # 生成CMakeLists.txt
+    - name: Generate CMakeLists
+      run: |
+        cat << EOF > CMakeLists.txt
+        cmake_minimum_required(VERSION 3.27)
+
+        project(curl_android)
+
+        add_library(curl_android INTERFACE)
+        add_library(curl::curl_static ALIAS curl_android)
+
+        function(add_imported_library lib_name lib_path)
+            add_library(\${lib_name} STATIC IMPORTED)
+            set_target_properties(\${lib_name} PROPERTIES IMPORTED_LOCATION \${lib_path})
+        endfunction()
+
+        set(LIBS curl nghttp2 nghttp3 ngtcp2 ngtcp2_crypto crypto ssl)
+
+        foreach (lib \${LIBS})
+            add_imported_library(\${lib} \${CMAKE_CURRENT_SOURCE_DIR}/combined_libs/jni/\${CMAKE_ANDROID_ARCH_ABI}/lib\${lib}_static.a)
+            target_include_directories(curl_android INTERFACE \${CMAKE_CURRENT_SOURCE_DIR}/combined_libs/include/\${lib})
+        endforeach ()
+
+        target_link_libraries(curl_android INTERFACE
+                curl
+                nghttp2
+                nghttp3
+                ngtcp2
+                ngtcp2_crypto
+                crypto
+                ssl
+                z)
+        EOF
+
+    # 上传产物
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: curl_android_package
+        path: |
+          CMakeLists.txt
+          combined_libs/
